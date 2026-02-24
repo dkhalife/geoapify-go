@@ -13,12 +13,12 @@ jobs:
     steps:
     - uses: actions/checkout@v4
       with:
-        token: ${{ secrets.WORKFLOW_TOKEN }}
+        token: ${{ secrets.WORKFLOW_TOKEN || github.token }}
 
     - name: Get the latest tag
       id: get_latest_tag
       env:
-        GH_TOKEN: ${{ secrets.WORKFLOW_TOKEN }}
+        GH_TOKEN: ${{ secrets.WORKFLOW_TOKEN || github.token }}
       run: |
         latest_tag=$(gh release list --limit 1 --json tagName -q '.[0].tagName' 2>/dev/null || echo "v0.0.0")
         if [ -z "$latest_tag" ]; then
@@ -48,7 +48,7 @@ jobs:
 
     - name: Create GitHub Release
       env:
-        GH_TOKEN: ${{ secrets.WORKFLOW_TOKEN }}
+        GH_TOKEN: ${{ secrets.WORKFLOW_TOKEN || github.token }}
       run: |
         new_tag=${{ steps.bump_version.outputs.new_tag }}
         gh release create $new_tag --generate-notes --title "$new_tag"
