@@ -32,7 +32,9 @@ const defaultRetryAfterFallback = 60 * time.Second
 //
 // Callers can switch on [RateLimitError.Reason] to distinguish the two
 // situations. For HTTP 429, the embedded [APIError] is reachable via
-// [errors.As] so existing handling of [APIError] continues to work.
+// [errors.As] so existing handling of [APIError] continues to work, and
+// [RateLimitError.Headers] exposes the raw response headers (useful for
+// surfacing X-Request-Id and similar diagnostic values to support).
 type RateLimitError struct {
 	// RetryAfter is the suggested wait before retrying. For http_429 this is
 	// derived from the response's Retry-After header (falling back to 60s
@@ -42,6 +44,11 @@ type RateLimitError struct {
 	// Reason is one of [RateLimitReasonHTTP429] or
 	// [RateLimitReasonDailyExceeded].
 	Reason string
+	// Headers is a clone of the HTTP response headers from the 429 response
+	// that triggered this error. It is nil for synthetic
+	// [RateLimitReasonDailyExceeded] errors because no response exists. Use
+	// .Get on a nil http.Header safely — it returns "".
+	Headers http.Header
 	// APIError is set for http_429 responses and exposes the underlying
 	// server error. It is nil for daily_quota_exceeded.
 	APIError *APIError

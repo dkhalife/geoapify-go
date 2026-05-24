@@ -166,6 +166,7 @@ func (c *Client) do(req *http.Request, result any) error {
 			rle := &RateLimitError{
 				RetryAfter: parseRetryAfter(raHeader, defaultRetryAfterFallback, c.nowFn()),
 				Reason:     RateLimitReasonHTTP429,
+				Headers:    resp.Header.Clone(),
 				APIError:   apiErr,
 			}
 			if c.retry == nil || attempt == maxAttempts-1 {

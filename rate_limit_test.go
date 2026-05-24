@@ -153,6 +153,28 @@ func TestDo_429_NoHeaderUsesFallback(t *testing.T) {
 	assertEqual(t, rle.RetryAfter, defaultRetryAfterFallback)
 }
 
+func TestRateLimitError_CapturesHeaders(t *testing.T) {
+	_, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "30")
+		w.Header().Set("X-Request-Id", "req-abc-123")
+		w.Header().Set("X-Custom", "anything")
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"message":"slow down"}`))
+	})
+
+	err := client.doGet(context.Background(), "/x", nil, nil)
+	rle, ok := IsRateLimitError(err)
+	if !ok {
+		t.Fatalf("expected *RateLimitError, got %T", err)
+	}
+	if rle.Headers == nil {
+		t.Fatal("expected Headers to be populated on HTTP 429")
+	}
+	assertEqual(t, rle.Headers.Get("X-Request-Id"), "req-abc-123")
+	assertEqual(t, rle.Headers.Get("Retry-After"), "30")
+	assertEqual(t, rle.Headers.Get("X-Custom"), "anything")
+}
+
 func TestDo_429_WithRetry_ResolvesWithinMaxRetries(t *testing.T) {
 	var calls atomic.Int32
 	_, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -242,6 +264,11 @@ func TestDailyCounter_RefusesAfterLimitWithoutDispatch(t *testing.T) {
 	}
 	assertEqual(t, rle.Reason, RateLimitReasonDailyExceeded)
 	assertEqual(t, rle.APIError == nil, true)
+	if rle.Headers != nil {
+		t.Fatalf("expected nil Headers on daily-exceeded, got %#v", rle.Headers)
+	}
+	// Nil http.Header is safe to call .Get on; returns "".
+	assertEqual(t, rle.Headers.Get("anything"), "")
 	if rle.RetryAfter <= 0 || rle.RetryAfter > 24*time.Hour {
 		t.Fatalf("unreasonable RetryAfter: %v", rle.RetryAfter)
 	}
