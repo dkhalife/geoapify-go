@@ -47,6 +47,61 @@ func TestAutocomplete_AllBuilderOptions(t *testing.T) {
 	assertEqual(t, resp.Results[0].City, "Berlin")
 }
 
+func TestAutocomplete_WithLimit(t *testing.T) {
+	t.Run("positive limit sets param", func(t *testing.T) {
+		_, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+			assertEqual(t, r.URL.Query().Get("limit"), "5")
+			w.Write(mustJSON(t, GeocodingResponse{Results: []Address{}}))
+		})
+
+		_, err := client.Geocoding().Autocomplete("Ber").
+			WithLimit(5).
+			Do(context.Background())
+		assertNoError(t, err)
+	})
+
+	t.Run("zero limit omits param", func(t *testing.T) {
+		_, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+			if _, ok := r.URL.Query()["limit"]; ok {
+				t.Fatalf("expected limit param to be absent, got %q", r.URL.Query().Get("limit"))
+			}
+			w.Write(mustJSON(t, GeocodingResponse{Results: []Address{}}))
+		})
+
+		_, err := client.Geocoding().Autocomplete("Ber").
+			WithLimit(0).
+			Do(context.Background())
+		assertNoError(t, err)
+	})
+
+	t.Run("negative limit omits param", func(t *testing.T) {
+		_, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+			if _, ok := r.URL.Query()["limit"]; ok {
+				t.Fatalf("expected limit param to be absent, got %q", r.URL.Query().Get("limit"))
+			}
+			w.Write(mustJSON(t, GeocodingResponse{Results: []Address{}}))
+		})
+
+		_, err := client.Geocoding().Autocomplete("Ber").
+			WithLimit(-3).
+			Do(context.Background())
+		assertNoError(t, err)
+	})
+
+	t.Run("limit applies to DoGeoJSON", func(t *testing.T) {
+		_, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+			assertEqual(t, r.URL.Query().Get("limit"), "7")
+			assertEqual(t, r.URL.Query().Get("format"), "geojson")
+			w.Write([]byte(`{"type":"FeatureCollection","features":[]}`))
+		})
+
+		_, err := client.Geocoding().Autocomplete("Ber").
+			WithLimit(7).
+			DoGeoJSON(context.Background())
+		assertNoError(t, err)
+	})
+}
+
 func TestAutocomplete_FilterAndBias(t *testing.T) {
 	_, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()

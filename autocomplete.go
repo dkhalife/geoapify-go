@@ -3,6 +3,7 @@ package geoapify
 import (
 	"context"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -14,6 +15,7 @@ type AutocompleteRequest struct {
 	lang    string
 	filters []string
 	biases  []string
+	limit   int
 	format  Format
 }
 
@@ -49,6 +51,13 @@ func (r *AutocompleteRequest) WithBias(biases ...string) *AutocompleteRequest {
 	return r
 }
 
+// WithLimit sets the maximum number of results to return. Values <= 0 are
+// ignored and the Geoapify server default applies.
+func (r *AutocompleteRequest) WithLimit(n int) *AutocompleteRequest {
+	r.limit = n
+	return r
+}
+
 // WithFormat sets the response format.
 //
 // Passing [FormatGeoJSON] makes [AutocompleteRequest.Do] return
@@ -76,6 +85,9 @@ func (r *AutocompleteRequest) buildParams() url.Values {
 	}
 	if len(r.biases) > 0 {
 		params.Set("bias", strings.Join(r.biases, "|"))
+	}
+	if r.limit > 0 {
+		params.Set("limit", strconv.Itoa(r.limit))
 	}
 	return params
 }
