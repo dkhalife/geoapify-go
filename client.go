@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 const defaultBaseURL = "https://api.geoapify.com"
@@ -28,6 +29,11 @@ type Client struct {
 	baseURL    string
 	httpClient *http.Client
 	retry      *retryConfig
+	limiter    *tokenBucket
+	daily      *dailyCounter
+	// nowFn is used internally for Retry-After parsing and is overridable in
+	// tests so they don't depend on wall-clock time.
+	nowFn func() time.Time
 }
 
 // Option configures the Client.
@@ -53,6 +59,7 @@ func NewClient(apiKey string, opts ...Option) *Client {
 		apiKey:     apiKey,
 		baseURL:    defaultBaseURL,
 		httpClient: http.DefaultClient,
+		nowFn:      time.Now,
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -95,66 +102,121 @@ func (c *Client) doPost(ctx context.Context, path string, params url.Values, bod
 }
 
 func (c *Client) do(req *http.Request, result any) error {
-	execute := func() error {
+	maxAttempts := 1
+	if c.retry != nil {
+		maxAttempts = c.retry.maxRetries + 1
+	}
+
+	ctx := req.Context()
+	var lastErr error
+
+	// The daily counter represents *logical* requests, not HTTP attempts.
+	// Charging it per retry attempt would let a single bad-traffic window
+	// shave 30-50% off the configured cap — exactly the budget we're meant
+	// to be protecting. Check once up front.
+	if c.daily != nil {
+		if rle := c.daily.checkAndIncrement(); rle != nil {
+			return rle
+		}
+	}
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		// http.Transport consumes req.Body during Do() and only rewinds via
+		// GetBody for redirects — not for application-level retries. Rewind
+		// the body ourselves on each retry attempt so POSTs don't silently
+		// send an empty payload after a 429.
+		if attempt > 0 && req.GetBody != nil {
+			body, err := req.GetBody()
+			if err != nil {
+				return fmt.Errorf("rewinding request body: %w", err)
+			}
+			req.Body = body
+		}
+
+		if c.limiter != nil {
+			if err := c.limiter.Wait(ctx); err != nil {
+				return err
+			}
+		}
+
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
 			return fmt.Errorf("executing request: %w", err)
 		}
-		defer resp.Body.Close()
 
-		respBody, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return fmt.Errorf("reading response: %w", err)
+		respBody, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			return fmt.Errorf("reading response: %w", readErr)
 		}
 
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return newAPIError(resp.StatusCode, respBody)
-		}
-
-		if result != nil {
-			if err := json.Unmarshal(respBody, result); err != nil {
-				return fmt.Errorf("decoding response: %w", err)
-			}
-		}
-
-		return nil
-	}
-
-	if c.retry != nil {
-		return c.retry.do(req.Context(), func() (*retryHint, error) {
-			resp, err := c.httpClient.Do(req)
-			if err != nil {
-				return nil, fmt.Errorf("executing request: %w", err)
-			}
-			defer resp.Body.Close()
-
-			respBody, err := io.ReadAll(resp.Body)
-			if err != nil {
-				return nil, fmt.Errorf("reading response: %w", err)
-			}
-
-			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-				apiErr := newAPIError(resp.StatusCode, respBody)
-				if isRetryable(resp.StatusCode) {
-					hint := &retryHint{}
-					if ra := resp.Header.Get("Retry-After"); ra != "" {
-						hint.retryAfter = ra
-					}
-					return hint, apiErr
-				}
-				return nil, apiErr
-			}
-
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			if result != nil {
 				if err := json.Unmarshal(respBody, result); err != nil {
-					return nil, fmt.Errorf("decoding response: %w", err)
+					return fmt.Errorf("decoding response: %w", err)
 				}
 			}
-			return nil, nil
-		})
-	}
+			return nil
+		}
 
-	return execute()
+		apiErr := newAPIError(resp.StatusCode, respBody)
+
+		if resp.StatusCode == http.StatusTooManyRequests {
+			raHeader := resp.Header.Get("Retry-After")
+			rle := &RateLimitError{
+				RetryAfter: parseRetryAfter(raHeader, defaultRetryAfterFallback, c.nowFn()),
+				Reason:     RateLimitReasonHTTP429,
+				APIError:   apiErr,
+			}
+			if c.retry == nil || attempt == maxAttempts-1 {
+				return rle
+			}
+			// If the server asked for longer than maxDelay, bail out
+			// instead of retrying behind the worker.
+			if raHeader != "" && rle.RetryAfter > c.retry.maxDelay {
+				return rle
+			}
+			var delay time.Duration
+			if raHeader != "" {
+				delay = rle.RetryAfter
+			} else {
+				delay = c.retry.calculateDelay(attempt)
+			}
+			if err := waitOrCancel(ctx, delay); err != nil {
+				return err
+			}
+			lastErr = rle
+			continue
+		}
+
+		if c.retry != nil && isRetryable(resp.StatusCode) && attempt < maxAttempts-1 {
+			delay := c.retry.calculateDelay(attempt)
+			if err := waitOrCancel(ctx, delay); err != nil {
+				return err
+			}
+			lastErr = apiErr
+			continue
+		}
+		return apiErr
+	}
+	return lastErr
+}
+
+func waitOrCancel(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 func isRetryable(statusCode int) bool {

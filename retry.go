@@ -1,10 +1,8 @@
 package geoapify
 
 import (
-	"context"
 	"math"
 	"math/rand/v2"
-	"strconv"
 	"time"
 )
 
@@ -14,15 +12,22 @@ type retryConfig struct {
 	maxDelay     time.Duration
 }
 
-type retryHint struct {
-	retryAfter string
-}
-
 // WithRetry enables retry with exponential backoff and jitter.
-// Retries are attempted on 429 (rate limit) and 5xx (server error) responses.
+//
+// Retries are attempted on transient failures:
+//   - HTTP 429 Too Many Requests with a Retry-After value that fits inside
+//     maxDelay (or no Retry-After at all, in which case exponential backoff
+//     is used).
+//   - HTTP 5xx responses.
+//
+// When a 429 carries a Retry-After larger than maxDelay, or when retries
+// are exhausted, the SDK surfaces a [*RateLimitError] so the caller can
+// implement its own cooldown. Daily-quota errors raised by
+// [WithDailyLimit] are never retried.
+//
 // maxRetries is the maximum number of retry attempts (0 means no retries).
-// initialDelay is the delay before the first retry.
-// maxDelay is the maximum delay between retries.
+// initialDelay is the delay before the first retry. maxDelay caps both the
+// exponential backoff and the acceptable server-suggested Retry-After.
 func WithRetry(maxRetries int, initialDelay, maxDelay time.Duration) Option {
 	return func(c *Client) {
 		c.retry = &retryConfig{
@@ -33,45 +38,13 @@ func WithRetry(maxRetries int, initialDelay, maxDelay time.Duration) Option {
 	}
 }
 
-func (r *retryConfig) do(ctx context.Context, fn func() (*retryHint, error)) error {
-	var lastErr error
-	for attempt := range r.maxRetries + 1 {
-		hint, err := fn()
-		if err == nil {
-			return nil
-		}
-		lastErr = err
-
-		if hint == nil || attempt == r.maxRetries {
-			break
-		}
-
-		delay := r.calculateDelay(attempt, hint)
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(delay):
-		}
-	}
-	return lastErr
-}
-
-func (r *retryConfig) calculateDelay(attempt int, hint *retryHint) time.Duration {
-	// Respect Retry-After header if present.
-	if hint != nil && hint.retryAfter != "" {
-		if seconds, err := strconv.Atoi(hint.retryAfter); err == nil {
-			return time.Duration(seconds) * time.Second
-		}
-	}
-
-	// Exponential backoff with jitter.
+// calculateDelay returns the exponential-backoff delay for the given
+// attempt index, capped by maxDelay and with 50-100% jitter applied.
+func (r *retryConfig) calculateDelay(attempt int) time.Duration {
 	backoff := float64(r.initialDelay) * math.Pow(2, float64(attempt))
 	if backoff > float64(r.maxDelay) {
 		backoff = float64(r.maxDelay)
 	}
-
-	// Add jitter: 50-100% of computed backoff.
 	jitter := backoff * (0.5 + rand.Float64()*0.5)
 	return time.Duration(jitter)
 }

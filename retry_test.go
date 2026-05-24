@@ -95,17 +95,31 @@ func TestRetry_ContextCancelled(t *testing.T) {
 }
 
 func TestRetry_RespectsRetryAfterHeader(t *testing.T) {
-	r := &retryConfig{initialDelay: time.Millisecond, maxDelay: time.Hour}
-	delay := r.calculateDelay(0, &retryHint{retryAfter: "2"})
-	assertEqual(t, delay, 2*time.Second)
+	var calls atomic.Int32
+	_, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		if n == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			w.Write([]byte(`{"message":"rate limited"}`))
+			return
+		}
+		w.Write([]byte(`{"ok":true}`))
+	})
+	client.retry = &retryConfig{maxRetries: 3, initialDelay: time.Millisecond, maxDelay: time.Hour}
+
+	var result struct{ OK bool }
+	err := client.doGet(context.Background(), "/test", nil, &result)
+	assertNoError(t, err)
+	assertEqual(t, calls.Load(), int32(2))
 }
 
 func TestRetry_CalculateDelay_ExponentialBackoff(t *testing.T) {
 	r := &retryConfig{initialDelay: 100 * time.Millisecond, maxDelay: 10 * time.Second}
 
-	delay0 := r.calculateDelay(0, &retryHint{})
-	delay1 := r.calculateDelay(1, &retryHint{})
-	delay2 := r.calculateDelay(2, &retryHint{})
+	delay0 := r.calculateDelay(0)
+	delay1 := r.calculateDelay(1)
+	delay2 := r.calculateDelay(2)
 
 	// Delays should generally increase (with jitter they may vary).
 	if delay0 > 200*time.Millisecond {
@@ -121,7 +135,7 @@ func TestRetry_CalculateDelay_ExponentialBackoff(t *testing.T) {
 
 func TestRetry_CalculateDelay_CappedAtMax(t *testing.T) {
 	r := &retryConfig{initialDelay: time.Second, maxDelay: 2 * time.Second}
-	delay := r.calculateDelay(10, &retryHint{})
+	delay := r.calculateDelay(10)
 	if delay > 2*time.Second {
 		t.Errorf("delay exceeded max: %v", delay)
 	}

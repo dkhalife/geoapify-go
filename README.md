@@ -138,6 +138,8 @@ iso, err := client.Isolines().
 | `WithHTTPClient(client)` | Custom `*http.Client` for all requests | `http.DefaultClient` |
 | `WithBaseURL(url)` | Override the API base URL | `https://api.geoapify.com` |
 | `WithRetry(max, initial, maxDelay)` | Enable retry with exponential backoff and jitter | Disabled |
+| `WithRateLimit(rps)` | Token-bucket throttle, requests per second | Disabled |
+| `WithDailyLimit(n)` | Refuse requests past a per-UTC-day cap | Disabled |
 
 ### Retry behavior
 
@@ -146,6 +148,38 @@ When enabled, the client retries on:
 - **5xx Server Errors** — transient server failures
 
 Retries are context-aware and will stop if the context is cancelled or expired.
+
+### Rate limiting and quotas
+
+For production workloads that hammer the GeoApify API from many goroutines, the SDK supports proactive throttling and a typed rate-limit error so callers can park work for a cooldown window instead of holding a worker on a long retry.
+
+```go
+client := geoapify.NewClient("YOUR_API_KEY",
+    geoapify.WithRateLimit(5),        // average 5 req/s, burst 5
+    geoapify.WithDailyLimit(3000),    // stop sending after 3000/day (UTC)
+    geoapify.WithRetry(3, 500*time.Millisecond, 10*time.Second),
+)
+
+_, err := client.Geocoding().Search("1313 Broadway").Do(ctx)
+if rle, ok := geoapify.IsRateLimitError(err); ok {
+    // Park the whole class of jobs, requeue current job, retry after rle.RetryAfter.
+    log.Printf("geoapify rate limited (%s); cooling down for %s", rle.Reason, rle.RetryAfter)
+    return
+}
+```
+
+`RateLimitError.Reason` is one of:
+
+- `"http_429"` — the server returned 429. `RetryAfter` is parsed from the response's `Retry-After` header (delta-seconds or HTTP-date), falling back to 60s when the header is missing or unparseable. The embedded `APIError` is reachable via `errors.As`, so `IsAPIError(err)` continues to recognize it.
+- `"daily_quota_exceeded"` — the client-side `WithDailyLimit` was reached. The request is **not** dispatched and the counter is **not** incremented. `RetryAfter` is the duration until the next UTC midnight.
+
+**Interaction with `WithRetry`:**
+
+- HTTP 429 with a `Retry-After` value within `maxDelay` (or no `Retry-After` at all): the SDK retries transparently with exponential backoff.
+- HTTP 429 with `Retry-After` larger than `maxDelay`, or after `maxRetries` is exhausted: the SDK surfaces `*RateLimitError` so the caller can implement its own cooldown.
+- `daily_quota_exceeded` is **never** retried by the SDK and is always surfaced immediately.
+
+Even without `WithRateLimit` or `WithDailyLimit`, every HTTP 429 response is returned as a `*RateLimitError` so callers always have access to the parsed `Retry-After`.
 
 ## 🛠️ Development
 
