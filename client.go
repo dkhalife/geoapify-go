@@ -110,15 +110,32 @@ func (c *Client) do(req *http.Request, result any) error {
 	ctx := req.Context()
 	var lastErr error
 
+	// The daily counter represents *logical* requests, not HTTP attempts.
+	// Charging it per retry attempt would let a single bad-traffic window
+	// shave 30-50% off the configured cap — exactly the budget we're meant
+	// to be protecting. Check once up front.
+	if c.daily != nil {
+		if rle := c.daily.checkAndIncrement(); rle != nil {
+			return rle
+		}
+	}
+
 	for attempt := 0; attempt < maxAttempts; attempt++ {
+		// http.Transport consumes req.Body during Do() and only rewinds via
+		// GetBody for redirects — not for application-level retries. Rewind
+		// the body ourselves on each retry attempt so POSTs don't silently
+		// send an empty payload after a 429.
+		if attempt > 0 && req.GetBody != nil {
+			body, err := req.GetBody()
+			if err != nil {
+				return fmt.Errorf("rewinding request body: %w", err)
+			}
+			req.Body = body
+		}
+
 		if c.limiter != nil {
 			if err := c.limiter.Wait(ctx); err != nil {
 				return err
-			}
-		}
-		if c.daily != nil {
-			if rle := c.daily.checkAndIncrement(); rle != nil {
-				return rle
 			}
 		}
 

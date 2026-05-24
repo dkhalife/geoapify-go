@@ -3,6 +3,7 @@ package geoapify
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -349,20 +350,88 @@ func TestTokenBucket_ContextCancelled(t *testing.T) {
 }
 
 func TestWithRateLimit_AppliedToEachAttempt(t *testing.T) {
+	// Drive the limiter into negative-token territory before the request
+	// runs so each subsequent Wait() actually blocks; then verify the
+	// limiter is consulted on every retry attempt (not just the first).
 	var calls atomic.Int32
 	_, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		calls.Add(1)
-		w.Write([]byte(`{}`))
+		n := calls.Add(1)
+		if n < 3 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Write([]byte(`{"ok":true}`))
 	})
-	client.limiter = newTokenBucket(1000) // effectively non-blocking
+	client.retry = &retryConfig{maxRetries: 5, initialDelay: time.Millisecond, maxDelay: time.Hour}
+	client.limiter = newTokenBucket(1)
+	// Drain the burst so the next Wait() must "sleep".
+	_ = client.limiter.Wait(context.Background())
+
 	var waits atomic.Int32
 	client.limiter.sleepFn = func(ctx context.Context, d time.Duration) error {
 		waits.Add(1)
 		return nil
 	}
 
-	for i := 0; i < 3; i++ {
-		assertNoError(t, client.doGet(context.Background(), "/x", nil, nil))
+	var result struct{ OK bool }
+	assertNoError(t, client.doGet(context.Background(), "/x", nil, &result))
+	// Three HTTP attempts → three Wait() calls → three sleeps.
+	if got := waits.Load(); got != 3 {
+		t.Fatalf("expected limiter sleepFn called 3 times (once per attempt), got %d", got)
 	}
 	assertEqual(t, calls.Load(), int32(3))
+}
+
+// ----- POST retry body / daily-per-logical-request -----
+
+func TestDo_POST_BodyResentOnRetry(t *testing.T) {
+	// Server asserts the request body is non-empty on every attempt.
+	var calls atomic.Int32
+	var emptyBody atomic.Bool
+	_, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		buf, _ := io.ReadAll(r.Body)
+		if len(buf) == 0 {
+			emptyBody.Store(true)
+		}
+		if n < 3 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Write([]byte(`{"ok":true}`))
+	})
+	client.retry = &retryConfig{maxRetries: 5, initialDelay: time.Millisecond, maxDelay: time.Hour}
+
+	body := map[string]string{"mode": "drive"}
+	var result struct{ OK bool }
+	assertNoError(t, client.doPost(context.Background(), "/x", nil, body, &result))
+	assertEqual(t, calls.Load(), int32(3))
+	if emptyBody.Load() {
+		t.Fatal("retry sent an empty body — GetBody not invoked")
+	}
+}
+
+func TestDailyCounter_NotChargedPerRetryAttempt(t *testing.T) {
+	// A single logical request that retries internally must consume exactly
+	// one daily-quota token, not one per HTTP attempt.
+	var calls atomic.Int32
+	_, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		if n < 3 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Write([]byte(`{"ok":true}`))
+	})
+	client.retry = &retryConfig{maxRetries: 5, initialDelay: time.Millisecond, maxDelay: time.Hour}
+	client.daily = newDailyCounter(1)
+
+	var result struct{ OK bool }
+	assertNoError(t, client.doGet(context.Background(), "/x", nil, &result))
+	assertEqual(t, calls.Load(), int32(3))
+	// Three HTTP attempts but only one token consumed.
+	assertEqual(t, client.daily.count, 1)
 }

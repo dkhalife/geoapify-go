@@ -116,11 +116,13 @@ func WithRateLimit(requestsPerSecond float64) Option {
 	}
 }
 
-// WithDailyLimit caps the number of requests the client will dispatch per
-// UTC day. When the cap is reached, subsequent calls return a
-// [*RateLimitError] with Reason [RateLimitReasonDailyExceeded] without
-// issuing an HTTP request and without incrementing the counter. The counter
-// resets at the next UTC midnight.
+// WithDailyLimit caps the number of logical requests the client will
+// dispatch per UTC day. The counter is charged once per call into the SDK,
+// regardless of how many HTTP attempts a retry loop performs internally.
+// When the cap is reached, subsequent calls return a [*RateLimitError]
+// with Reason [RateLimitReasonDailyExceeded] without issuing an HTTP
+// request and without incrementing the counter. The counter resets at the
+// next UTC midnight.
 //
 // A value <= 0 disables daily tracking (the default).
 func WithDailyLimit(n int) Option {
