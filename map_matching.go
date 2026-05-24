@@ -54,14 +54,15 @@ func (r *MapMatchingRequest) Do(ctx context.Context) (*GeoJSONFeatureCollection,
 // order, geometries within MultiLineString in order, and points within each
 // line in order. Adjacent legs are deduplicated only when the first point of
 // leg N+1 is byte-identical (exact float equality) to the last point of leg N.
-// No epsilon is applied — callers who want fuzzy dedupe should do it
-// themselves on Raw.
+// The same exact-equality dedupe is applied at both feature boundaries and
+// inner-line boundaries within a MultiLineString. No epsilon is applied —
+// callers who want fuzzy dedupe should do it themselves on Raw.
 //
-// TotalDistance (meters) and TotalTime (seconds) are summed from each
-// feature's properties.distance and properties.time. If a feature lacks these
-// fields, the top-level FeatureCollection properties are used as a fallback.
-// If neither is present, totals remain 0 and no error is returned — a
-// successful match without metrics is still a success.
+// TotalDistance (meters) and TotalTime (seconds) come from the top-level
+// FeatureCollection properties when present (they are authoritative);
+// otherwise they are summed from each feature's properties.distance and
+// properties.time. If neither is present, totals remain 0 and no error is
+// returned — a successful match without metrics is still a success.
 //
 // Raw is always populated on success so callers needing per-leg detail (e.g.
 // coloring per segment) can still reach into the original response.
@@ -89,6 +90,7 @@ func flattenMatchedRoute(fc *GeoJSONFeatureCollection) (*MatchedRoute, error) {
 		return result, nil
 	}
 
+	var sumDist, sumTime float64
 	for i, feature := range fc.Features {
 		if feature.Geometry != nil {
 			pts, err := extractPoints(feature.Geometry)
@@ -97,20 +99,24 @@ func flattenMatchedRoute(fc *GeoJSONFeatureCollection) (*MatchedRoute, error) {
 			}
 			appendPoints(&result.Points, pts)
 		}
-
-		dist, distOK := propFloat(feature.Properties, "distance")
-		if !distOK {
-			dist, _ = propFloat(fc.Properties, "distance")
+		if d, ok := propFloat(feature.Properties, "distance"); ok {
+			sumDist += d
 		}
-		result.TotalDistance += dist
-
-		t, timeOK := propFloat(feature.Properties, "time")
-		if !timeOK {
-			t, _ = propFloat(fc.Properties, "time")
+		if t, ok := propFloat(feature.Properties, "time"); ok {
+			sumTime += t
 		}
-		result.TotalTime += t
 	}
 
+	if d, ok := propFloat(fc.Properties, "distance"); ok {
+		result.TotalDistance = d
+	} else {
+		result.TotalDistance = sumDist
+	}
+	if t, ok := propFloat(fc.Properties, "time"); ok {
+		result.TotalTime = t
+	} else {
+		result.TotalTime = sumTime
+	}
 	return result, nil
 }
 
@@ -144,6 +150,8 @@ func extractPoints(geom *GeoJSONGeometry) ([]Location, error) {
 		}
 		return out, nil
 	default:
+		// Intentionally ignore unsupported geometry types (e.g. Point on
+		// an info feature) — callers wanting full detail can use Raw.
 		return nil, nil
 	}
 }

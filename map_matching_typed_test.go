@@ -144,24 +144,58 @@ func TestFlattenMatchedRoute(t *testing.T) {
 			wantTime:     3.0,
 		},
 		{
-			name: "fallback to collection-level totals",
+			name: "collection total wins over summed features",
 			fc: &GeoJSONFeatureCollection{
 				Properties: map[string]any{
-					"distance": 999.0,
-					"time":     99.0,
+					"distance": 500.0,
+					"time":     50.0,
 				},
 				Features: []GeoJSONFeature{
 					{
 						Geometry: lineGeom([2]float64{1, 1}, [2]float64{2, 2}),
+						Properties: map[string]any{
+							"distance": 100.0,
+							"time":     10.0,
+						},
+					},
+					{
+						Geometry: lineGeom([2]float64{2, 2}, [2]float64{3, 3}),
+						Properties: map[string]any{
+							"distance": 200.0,
+							"time":     20.0,
+						},
 					},
 				},
 			},
 			wantPoints: []Location{
 				{Lat: 1, Lon: 1},
 				{Lat: 2, Lon: 2},
+				{Lat: 3, Lon: 3},
 			},
-			wantDistance: 999.0,
-			wantTime:     99.0,
+			wantDistance: 500.0,
+			wantTime:     50.0,
+		},
+		{
+			name: "collection-level fallback applies once not per feature",
+			fc: &GeoJSONFeatureCollection{
+				Properties: map[string]any{
+					"distance": 900.0,
+					"time":     90.0,
+				},
+				Features: []GeoJSONFeature{
+					{Geometry: lineGeom([2]float64{1, 1}, [2]float64{2, 2})},
+					{Geometry: lineGeom([2]float64{2, 2}, [2]float64{3, 3})},
+					{Geometry: lineGeom([2]float64{3, 3}, [2]float64{4, 4})},
+				},
+			},
+			wantPoints: []Location{
+				{Lat: 1, Lon: 1},
+				{Lat: 2, Lon: 2},
+				{Lat: 3, Lon: 3},
+				{Lat: 4, Lon: 4},
+			},
+			wantDistance: 900.0,
+			wantTime:     90.0,
 		},
 		{
 			name: "no totals anywhere returns zero",
