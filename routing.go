@@ -84,13 +84,18 @@ func (r *RoutingRequest) WithMaxSpeed(n int) *RoutingRequest {
 }
 
 // WithFormat sets the response format.
+//
+// Passing [FormatGeoJSON] makes [RoutingRequest.Do] return
+// [ErrUseDoGeoJSON] without issuing a request; call
+// [RoutingRequest.DoGeoJSON] instead.
 func (r *RoutingRequest) WithFormat(f Format) *RoutingRequest {
 	r.format = f
 	return r
 }
 
-// Do executes the routing request.
-func (r *RoutingRequest) Do(ctx context.Context) (*RoutingResponse, error) {
+// buildParams builds the query parameters for the request, excluding the
+// format parameter (which differs between Do and DoGeoJSON).
+func (r *RoutingRequest) buildParams() url.Values {
 	params := url.Values{}
 
 	// Build waypoints param: pipe-separated lat,lon pairs.
@@ -128,11 +133,52 @@ func (r *RoutingRequest) Do(ctx context.Context) (*RoutingResponse, error) {
 	if r.maxSpeed > 0 {
 		params.Set("max_speed", fmt.Sprintf("%d", r.maxSpeed))
 	}
-	if r.format != "" {
-		params.Set("format", string(r.format))
+	return params
+}
+
+// Do executes the routing request and returns the typed response. The
+// typed response includes leg and step metadata (distance, time, maneuvers)
+// but no polyline coordinates. Use [RoutingRequest.DoGeoJSON] when you need
+// the route geometry for rendering on a map.
+//
+// If WithFormat(FormatGeoJSON) has been set, Do returns [ErrUseDoGeoJSON]
+// without issuing a request: a GeoJSON FeatureCollection cannot be
+// unmarshaled into [RoutingResponse].
+func (r *RoutingRequest) Do(ctx context.Context) (*RoutingResponse, error) {
+	if r.format == FormatGeoJSON {
+		return nil, ErrUseDoGeoJSON
 	}
 
+	params := r.buildParams()
+	format := r.format
+	if format == "" {
+		// /v1/routing defaults to format=geojson server-side (unlike the
+		// geocoding endpoints, which default to json). Without an
+		// explicit default here, Do would receive a FeatureCollection
+		// and silently produce an empty RoutingResponse. Force json so
+		// Do's contract holds without requiring callers to know the
+		// server default.
+		format = FormatJSON
+	}
+	params.Set("format", string(format))
+
 	var result RoutingResponse
+	if err := r.service.client.doGet(ctx, "/v1/routing", params, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// DoGeoJSON executes the routing request and returns the raw GeoJSON
+// FeatureCollection, which includes LineString (or MultiLineString)
+// geometry with the full coordinate arrays needed to draw the route on a
+// map. The format=geojson query parameter is always set, regardless of any
+// prior WithFormat call.
+func (r *RoutingRequest) DoGeoJSON(ctx context.Context) (*GeoJSONFeatureCollection, error) {
+	params := r.buildParams()
+	params.Set("format", string(FormatGeoJSON))
+
+	var result GeoJSONFeatureCollection
 	if err := r.service.client.doGet(ctx, "/v1/routing", params, &result); err != nil {
 		return nil, err
 	}
