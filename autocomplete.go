@@ -55,8 +55,9 @@ func (r *AutocompleteRequest) WithFormat(f Format) *AutocompleteRequest {
 	return r
 }
 
-// Do executes the autocomplete request.
-func (r *AutocompleteRequest) Do(ctx context.Context) (*GeocodingResponse, error) {
+// buildParams builds the query parameters for the request, excluding the
+// format parameter (which differs between Do and DoGeoJSON).
+func (r *AutocompleteRequest) buildParams() url.Values {
 	params := url.Values{}
 	params.Set("text", r.text)
 
@@ -72,11 +73,40 @@ func (r *AutocompleteRequest) Do(ctx context.Context) (*GeocodingResponse, error
 	if len(r.biases) > 0 {
 		params.Set("bias", strings.Join(r.biases, "|"))
 	}
+	return params
+}
+
+// Do executes the autocomplete request and returns the typed response.
+//
+// If WithFormat(FormatGeoJSON) has been set, Do returns [ErrUseDoGeoJSON]
+// without issuing a request: use [AutocompleteRequest.DoGeoJSON] for
+// GeoJSON output.
+func (r *AutocompleteRequest) Do(ctx context.Context) (*GeocodingResponse, error) {
+	if r.format == FormatGeoJSON {
+		return nil, ErrUseDoGeoJSON
+	}
+
+	params := r.buildParams()
 	if r.format != "" {
 		params.Set("format", string(r.format))
 	}
 
 	var resp GeocodingResponse
+	if err := r.client.doGet(ctx, "/v1/geocode/autocomplete", params, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// DoGeoJSON executes the autocomplete request and returns the raw GeoJSON
+// FeatureCollection, preserving every property the typed
+// [GeocodingResponse] drops. The format=geojson query parameter is always
+// set, regardless of any prior WithFormat call.
+func (r *AutocompleteRequest) DoGeoJSON(ctx context.Context) (*GeoJSONFeatureCollection, error) {
+	params := r.buildParams()
+	params.Set("format", string(FormatGeoJSON))
+
+	var resp GeoJSONFeatureCollection
 	if err := r.client.doGet(ctx, "/v1/geocode/autocomplete", params, &resp); err != nil {
 		return nil, err
 	}

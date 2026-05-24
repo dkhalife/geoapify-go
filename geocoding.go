@@ -140,8 +140,9 @@ func (r *SearchRequest) WithFormat(f Format) *SearchRequest {
 	return r
 }
 
-// Do executes the forward geocoding request.
-func (r *SearchRequest) Do(ctx context.Context) (*GeocodingResponse, error) {
+// buildParams builds the query parameters for the request, excluding the
+// format parameter (which differs between Do and DoGeoJSON).
+func (r *SearchRequest) buildParams() url.Values {
 	params := url.Values{}
 	params.Set("text", r.text)
 
@@ -181,11 +182,44 @@ func (r *SearchRequest) Do(ctx context.Context) (*GeocodingResponse, error) {
 	if len(r.biases) > 0 {
 		params.Set("bias", strings.Join(r.biases, "|"))
 	}
+	return params
+}
+
+// Do executes the forward geocoding request and returns the typed response.
+//
+// If WithFormat(FormatGeoJSON) has been set, Do returns [ErrUseDoGeoJSON]
+// without issuing a request: a GeoJSON FeatureCollection cannot be
+// unmarshaled into [GeocodingResponse]. Use [SearchRequest.DoGeoJSON]
+// instead for GeoJSON output.
+func (r *SearchRequest) Do(ctx context.Context) (*GeocodingResponse, error) {
+	if r.format == FormatGeoJSON {
+		return nil, ErrUseDoGeoJSON
+	}
+
+	params := r.buildParams()
 	if r.format != "" {
 		params.Set("format", string(r.format))
 	}
 
 	var resp GeocodingResponse
+	if err := r.client.doGet(ctx, "/v1/geocode/search", params, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// DoGeoJSON executes the forward geocoding request and returns the raw
+// GeoJSON FeatureCollection. This preserves fields that the typed
+// [GeocodingResponse] drops (Categories, ISO3166_2, Rank, Bbox, PlusCode,
+// Datasource, Timezone, etc.) via the untyped Properties map.
+//
+// The format=geojson query parameter is always set, regardless of any
+// prior WithFormat call. All other builder options are honored.
+func (r *SearchRequest) DoGeoJSON(ctx context.Context) (*GeoJSONFeatureCollection, error) {
+	params := r.buildParams()
+	params.Set("format", string(FormatGeoJSON))
+
+	var resp GeoJSONFeatureCollection
 	if err := r.client.doGet(ctx, "/v1/geocode/search", params, &resp); err != nil {
 		return nil, err
 	}

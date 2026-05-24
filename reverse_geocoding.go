@@ -50,8 +50,9 @@ func (r *ReverseGeocodingRequest) WithFormat(f Format) *ReverseGeocodingRequest 
 	return r
 }
 
-// Do executes the reverse geocoding request.
-func (r *ReverseGeocodingRequest) Do(ctx context.Context) (*GeocodingResponse, error) {
+// buildParams builds the query parameters for the request, excluding the
+// format parameter (which differs between Do and DoGeoJSON).
+func (r *ReverseGeocodingRequest) buildParams() url.Values {
 	params := url.Values{}
 	params.Set("lat", fmt.Sprintf("%f", r.lat))
 	params.Set("lon", fmt.Sprintf("%f", r.lon))
@@ -65,11 +66,40 @@ func (r *ReverseGeocodingRequest) Do(ctx context.Context) (*GeocodingResponse, e
 	if r.limit > 0 {
 		params.Set("limit", fmt.Sprintf("%d", r.limit))
 	}
+	return params
+}
+
+// Do executes the reverse geocoding request and returns the typed response.
+//
+// If WithFormat(FormatGeoJSON) has been set, Do returns [ErrUseDoGeoJSON]
+// without issuing a request: use [ReverseGeocodingRequest.DoGeoJSON] for
+// GeoJSON output.
+func (r *ReverseGeocodingRequest) Do(ctx context.Context) (*GeocodingResponse, error) {
+	if r.format == FormatGeoJSON {
+		return nil, ErrUseDoGeoJSON
+	}
+
+	params := r.buildParams()
 	if r.format != "" {
 		params.Set("format", string(r.format))
 	}
 
 	var resp GeocodingResponse
+	if err := r.client.doGet(ctx, "/v1/geocode/reverse", params, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// DoGeoJSON executes the reverse geocoding request and returns the raw
+// GeoJSON FeatureCollection, preserving every property the typed
+// [GeocodingResponse] drops. The format=geojson query parameter is always
+// set, regardless of any prior WithFormat call.
+func (r *ReverseGeocodingRequest) DoGeoJSON(ctx context.Context) (*GeoJSONFeatureCollection, error) {
+	params := r.buildParams()
+	params.Set("format", string(FormatGeoJSON))
+
+	var resp GeoJSONFeatureCollection
 	if err := r.client.doGet(ctx, "/v1/geocode/reverse", params, &resp); err != nil {
 		return nil, err
 	}
