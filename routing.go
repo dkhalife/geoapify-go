@@ -84,6 +84,10 @@ func (r *RoutingRequest) WithMaxSpeed(n int) *RoutingRequest {
 }
 
 // WithFormat sets the response format.
+//
+// Passing [FormatGeoJSON] makes [RoutingRequest.Do] return
+// [ErrUseDoGeoJSON] without issuing a request; call
+// [RoutingRequest.DoGeoJSON] instead.
 func (r *RoutingRequest) WithFormat(f Format) *RoutingRequest {
 	r.format = f
 	return r
@@ -146,9 +150,17 @@ func (r *RoutingRequest) Do(ctx context.Context) (*RoutingResponse, error) {
 	}
 
 	params := r.buildParams()
-	if r.format != "" {
-		params.Set("format", string(r.format))
+	format := r.format
+	if format == "" {
+		// /v1/routing defaults to format=geojson server-side (unlike the
+		// geocoding endpoints, which default to json). Without an
+		// explicit default here, Do would receive a FeatureCollection
+		// and silently produce an empty RoutingResponse. Force json so
+		// Do's contract holds without requiring callers to know the
+		// server default.
+		format = FormatJSON
 	}
+	params.Set("format", string(format))
 
 	var result RoutingResponse
 	if err := r.service.client.doGet(ctx, "/v1/routing", params, &result); err != nil {

@@ -50,6 +50,10 @@ func (r *AutocompleteRequest) WithBias(biases ...string) *AutocompleteRequest {
 }
 
 // WithFormat sets the response format.
+//
+// Passing [FormatGeoJSON] makes [AutocompleteRequest.Do] return
+// [ErrUseDoGeoJSON] without issuing a request; call
+// [AutocompleteRequest.DoGeoJSON] instead.
 func (r *AutocompleteRequest) WithFormat(f Format) *AutocompleteRequest {
 	r.format = f
 	return r
@@ -87,9 +91,11 @@ func (r *AutocompleteRequest) Do(ctx context.Context) (*GeocodingResponse, error
 	}
 
 	params := r.buildParams()
-	if r.format != "" {
-		params.Set("format", string(r.format))
+	format := r.format
+	if format == "" {
+		format = FormatJSON
 	}
+	params.Set("format", string(format))
 
 	var resp GeocodingResponse
 	if err := r.client.doGet(ctx, "/v1/geocode/autocomplete", params, &resp); err != nil {

@@ -57,6 +57,12 @@ func TestSearch_DoGeoJSON_SendsFormatAndPreservesProperties(t *testing.T) {
 	if _, ok := props["datasource"].(map[string]any); !ok {
 		t.Fatalf("datasource not preserved: %#v", props["datasource"])
 	}
+	// Geometry round-trips too.
+	assertEqual(t, fc.Features[0].Geometry.Type, "Point")
+	coords, ok := fc.Features[0].Geometry.Coordinates.([]any)
+	if !ok || len(coords) != 2 {
+		t.Fatalf("expected 2-element Point coordinates, got %#v", fc.Features[0].Geometry.Coordinates)
+	}
 }
 
 func TestSearch_DoGeoJSON_OverridesWithFormat(t *testing.T) {
@@ -102,6 +108,19 @@ func TestReverse_DoGeoJSON_SendsFormat(t *testing.T) {
 	assertNoError(t, err)
 	assertEqual(t, len(fc.Features), 1)
 	assertEqual(t, fc.Features[0].Properties["iso3166_2"], "FR-75")
+	assertEqual(t, fc.Features[0].Geometry.Type, "Point")
+}
+
+func TestReverse_DoGeoJSON_OverridesWithFormat(t *testing.T) {
+	_, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		assertEqual(t, r.URL.Query().Get("format"), "geojson")
+		w.Write([]byte(sampleFeatureCollection))
+	})
+
+	_, err := client.Geocoding().Reverse(0, 0).
+		WithFormat(FormatJSON).
+		DoGeoJSON(context.Background())
+	assertNoError(t, err)
 }
 
 func TestReverse_Do_WithGeoJSONFormatReturnsErr(t *testing.T) {
@@ -125,6 +144,19 @@ func TestAutocomplete_DoGeoJSON_SendsFormat(t *testing.T) {
 	fc, err := client.Geocoding().Autocomplete("par").DoGeoJSON(context.Background())
 	assertNoError(t, err)
 	assertEqual(t, len(fc.Features), 1)
+	assertEqual(t, fc.Features[0].Geometry.Type, "Point")
+}
+
+func TestAutocomplete_DoGeoJSON_OverridesWithFormat(t *testing.T) {
+	_, client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		assertEqual(t, r.URL.Query().Get("format"), "geojson")
+		w.Write([]byte(sampleFeatureCollection))
+	})
+
+	_, err := client.Geocoding().Autocomplete("par").
+		WithFormat(FormatJSON).
+		DoGeoJSON(context.Background())
+	assertNoError(t, err)
 }
 
 func TestAutocomplete_Do_WithGeoJSONFormatReturnsErr(t *testing.T) {

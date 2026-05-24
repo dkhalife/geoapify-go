@@ -135,6 +135,10 @@ func (r *SearchRequest) WithBias(biases ...string) *SearchRequest {
 }
 
 // WithFormat sets the response format.
+//
+// Passing [FormatGeoJSON] makes [SearchRequest.Do] return
+// [ErrUseDoGeoJSON] without issuing a request; call
+// [SearchRequest.DoGeoJSON] instead.
 func (r *SearchRequest) WithFormat(f Format) *SearchRequest {
 	r.format = f
 	return r
@@ -197,9 +201,13 @@ func (r *SearchRequest) Do(ctx context.Context) (*GeocodingResponse, error) {
 	}
 
 	params := r.buildParams()
-	if r.format != "" {
-		params.Set("format", string(r.format))
+	format := r.format
+	if format == "" {
+		// Defensive default: protect against any future server-side
+		// default change.
+		format = FormatJSON
 	}
+	params.Set("format", string(format))
 
 	var resp GeocodingResponse
 	if err := r.client.doGet(ctx, "/v1/geocode/search", params, &resp); err != nil {

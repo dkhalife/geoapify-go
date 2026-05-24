@@ -143,7 +143,10 @@ func TestRouting_DefaultsOmitted(t *testing.T) {
 		assertEqual(t, q.Get("details"), "")
 		assertEqual(t, q.Get("traffic"), "")
 		assertEqual(t, q.Get("max_speed"), "")
-		assertEqual(t, q.Get("format"), "")
+		// Do defaults format=json because /v1/routing's server-side
+		// default is geojson, which would silently produce empty results
+		// when decoded into RoutingResponse.
+		assertEqual(t, q.Get("format"), "json")
 		w.Write([]byte(`{"results":[]}`))
 	})
 

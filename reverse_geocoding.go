@@ -45,6 +45,10 @@ func (r *ReverseGeocodingRequest) WithLimit(n int) *ReverseGeocodingRequest {
 }
 
 // WithFormat sets the response format.
+//
+// Passing [FormatGeoJSON] makes [ReverseGeocodingRequest.Do] return
+// [ErrUseDoGeoJSON] without issuing a request; call
+// [ReverseGeocodingRequest.DoGeoJSON] instead.
 func (r *ReverseGeocodingRequest) WithFormat(f Format) *ReverseGeocodingRequest {
 	r.format = f
 	return r
@@ -80,9 +84,11 @@ func (r *ReverseGeocodingRequest) Do(ctx context.Context) (*GeocodingResponse, e
 	}
 
 	params := r.buildParams()
-	if r.format != "" {
-		params.Set("format", string(r.format))
+	format := r.format
+	if format == "" {
+		format = FormatJSON
 	}
+	params.Set("format", string(format))
 
 	var resp GeocodingResponse
 	if err := r.client.doGet(ctx, "/v1/geocode/reverse", params, &resp); err != nil {
